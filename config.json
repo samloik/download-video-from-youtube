@@ -1,0 +1,5 @@
+{
+    "default_resolution": 720,
+    "default_cookies": "youtube_cookies.txt",
+    "output_dir": "./output"
+}
