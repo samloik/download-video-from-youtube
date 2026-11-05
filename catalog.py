@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import os
 import re
 from datetime import datetime
@@ -113,6 +114,29 @@ def parse_log(log_path: Path) -> tuple[dict[str, tuple[str, str]], set[str], lis
     return url_by_file, transcripts, pending, title_by_url
 
 
+def load_url_overrides(path: Path | None) -> dict[str, dict[str, str]]:
+    """Ручные соответствия файл -> {url, title}.
+
+    Нужны, когда прогон в лог не попал целиком (например, скачивание прервалось)
+    и автоматическая связка невозможна. Формат — JSON:
+        {"<имя файла>": "https://…"}  или  {"<имя файла>": {"url": "...", "title": "..."}}
+    """
+    if path is None or not path.is_file():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"не читается {path}: {exc}")
+        return {}
+    out: dict[str, dict[str, str]] = {}
+    for name, val in raw.items():
+        if isinstance(val, str):
+            out[name] = {"url": val}
+        elif isinstance(val, dict):
+            out[name] = {k: str(v) for k, v in val.items() if k in ("url", "title")}
+    return out
+
+
 def scan_summaries(summary_dir: Path) -> dict[int, tuple[str, str]]:
     """Каталог выжимок: номер -> (краткое название, имя файла)."""
     found: dict[int, tuple[str, str]] = {}
@@ -132,10 +156,12 @@ def build_index(
     log_path: Path,
     csv_path: Path,
     summary_dir: Path | None = None,
+    overrides: dict[str, dict[str, str]] | None = None,
 ) -> list[dict]:
     files = [p for p in out_dir.iterdir() if p.is_file() and p.suffix.lower() in MEDIA_EXT]
     url_by_file, _, pending, title_by_url = parse_log(log_path)
     summaries = scan_summaries(summary_dir or csv_path.parent)
+    overrides = overrides or {}
 
     unmapped = [p for p in files if p.name not in url_by_file]
     heuristic_url = pending[0] if (len(pending) == 1 and len(unmapped) == 1) else ""
@@ -145,14 +171,17 @@ def build_index(
         stems_txt = [p.with_suffix(e) for e in TXT_EXT]
         transcript = next((t.name for t in stems_txt if t.exists()), "")
 
-        if p.name in url_by_file:
+        manual = overrides.get(p.name, {})
+        if manual.get("url"):
+            url, source = manual["url"], "вручную"
+        elif p.name in url_by_file:
             url, source = url_by_file[p.name]
         elif heuristic_url:
             url, source = heuristic_url, "предположительно"
         else:
             url, source = "", ""
 
-        title = title_by_url.get(url, "") or p.stem
+        title = manual.get("title") or title_by_url.get(url, "") or p.stem
 
         st = p.stat()
         rows.append({
@@ -190,6 +219,8 @@ def main() -> int:
     ap.add_argument("--out", default="summaries/index.csv", help="куда писать CSV")
     ap.add_argument("--summaries", default=None,
                     help="каталог выжимок (по умолчанию — каталог, где лежит CSV)")
+    ap.add_argument("--urls", default="summaries/urls.json",
+                    help="JSON с ручными соответствиями файл -> url/title (по умолчанию summaries/urls.json)")
     a = ap.parse_args()
 
     out_dir = Path(a.dir)
@@ -199,7 +230,8 @@ def main() -> int:
 
     csv_path = Path(a.out)
     summary_dir = Path(a.summaries) if a.summaries else csv_path.parent
-    rows = build_index(out_dir, Path(a.log), csv_path, summary_dir)
+    overrides = load_url_overrides(Path(a.urls))
+    rows = build_index(out_dir, Path(a.log), csv_path, summary_dir, overrides)
 
     with_txt = sum(1 for r in rows if r["транскрипт"] != "нет")
     with_url = sum(1 for r in rows if r["url"])
