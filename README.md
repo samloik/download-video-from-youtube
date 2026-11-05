@@ -68,6 +68,8 @@ usage: main.py [-h] [--resolution RESOLUTION] [--bitrate BITRATE]
                [--config-file CONFIG_FILE]
                [--urls URLS [URLS ...]] [--convert]
                [--batch BATCH] [--audio] [--transcribe]
+               [--whisper-model WHISPER_MODEL]
+               [--whisper-language WHISPER_LANGUAGE] [--clean]
                [url]
 
 Скачивание видео и аудио с YouTube
@@ -91,7 +93,20 @@ options:
   --batch BATCH         JSON-файл с массивом задач
   --audio               Скачивать только аудиодорожку
   --transcribe          Транскрибировать аудио через Whisper
+  --whisper-model       Модель Whisper: tiny/base/small/medium/large-v3
+                        (по умолчанию из config.json: small)
+  --whisper-language    Язык распознавания (по умолчанию ru)
+  --clean               Очистить каталог вывода перед скачиванием
+                        (раньше очистка выполнялась всегда и стирала прошлые файлы)
 ```
+
+### Заметки по поведению
+
+- По умолчанию файлы в `output/` **не удаляются** — старые ролики и транскрипты остаются.
+- Для TikTok/Instagram нужен `curl_cffi<0.14` в venv (impersonation), иначе yt-dlp падает
+  с `Unexpected response from webpage request`. Проверка: `venv/bin/yt-dlp -v <url>`,
+  в логе должно быть `Impersonation target: <...>`, а не `None`.
+- `catalog.py` сканирует только верхний уровень `output/`; `output/subs/` в индекс не попадает.
 
 ### Примеры
 

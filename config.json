@@ -2,5 +2,7 @@
     "default_resolution": 720,
     "default_cookies": "youtube_cookies.txt",
     "output_dir": "./output",
-    "default_proxy": "socks5://127.0.0.1:10808"
+    "default_proxy": "socks5://127.0.0.1:10808",
+    "whisper_model": "small",
+    "whisper_language": "ru"
 }

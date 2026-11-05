@@ -120,16 +120,25 @@ def ensure_output_dir(output_dir: str) -> str:
     return output_dir
 
 
-def clean_output_dir(output_dir: str) -> None:
-    """Очистить директорию вывода перед новым скачиванием."""
+def clean_output_dir(output_dir: str, logger: logging.Logger = None) -> None:
+    """Очистить директорию вывода — только по явному запросу (--clean).
+
+    По умолчанию НЕ вызывается: раньше она стирала все файлы output/ перед
+    каждым скачиванием, вместе с прошлыми транскриптами и каталогом.
+    """
+    if logger is None:
+        logger = logging.getLogger(__name__)
     if os.path.exists(output_dir):
+        removed = 0
         for file in os.listdir(output_dir):
             file_path = os.path.join(output_dir, file)
             try:
                 if os.path.isfile(file_path):
                     os.remove(file_path)
+                    removed += 1
             except Exception as e:
-                print(f"Не удалось удалить {file_path}: {e}")
+                logger.error(f"Не удалось удалить {file_path}: {e}")
+        logger.info(f"Очищено файлов в {output_dir}: {removed}")
 
 
 def convert_to_mp4(input_file: str, output_file: str, duration: int, logger: logging.Logger = None) -> bool:
@@ -211,7 +220,12 @@ def convert_to_mp3(input_file: str, output_file: str, duration: int, logger: log
         return False
 
 
-def transcribe_audio(audio_file: str, model: str = "tiny", logger: logging.Logger = None) -> str:
+def transcribe_audio(
+    audio_file: str,
+    model: str = "small",
+    language: str = "ru",
+    logger: logging.Logger = None
+) -> str:
     """Транскрибует аудио через Whisper."""
     if logger is None:
         logger = logging.getLogger(__name__)
@@ -221,7 +235,7 @@ def transcribe_audio(audio_file: str, model: str = "tiny", logger: logging.Logge
         logger.info(f"Загружаем модель {model}...")
         model_obj = whisper.load_model(model)
         logger.info("Распознаём речь...")
-        result = model_obj.transcribe(audio_file, language="ru")
+        result = model_obj.transcribe(audio_file, language=language)
         return result.get("text", "")
     except ImportError:
         logger.error("Whisper не установлен. pip install openai-whisper")
@@ -240,7 +254,8 @@ def download_video(
     process_playlist: bool = False,
     config: dict = None,
     logger: logging.Logger = None,
-    convert: bool = False
+    convert: bool = False,
+    clean: bool = False
 ):
     """
     Скачивает видео с YouTube.
@@ -267,9 +282,10 @@ def download_video(
     proxy = proxy or config.get('default_proxy')
     output_dir = output_dir or config.get('output_dir', '.')
     
-    # Создаём директорию
+    # Создаём директорию; чистим только по явному --clean
     ensure_output_dir(output_dir)
-    clean_output_dir(output_dir)  # Очищаем перед новым скачиванием
+    if clean:
+        clean_output_dir(output_dir, logger=logger)
     logger.info(f"Директория вывода: {output_dir}")
     
     # Автообнаружение форматов
@@ -355,7 +371,10 @@ def download_audio(
     config: dict = None,
     logger: logging.Logger = None,
     convert: bool = True,
-    transcribe: bool = False
+    transcribe: bool = False,
+    whisper_model=None,
+    whisper_language=None,
+    clean: bool = False
 ):
     """
     Скачивает аудиодорожку с YouTube.
@@ -380,9 +399,12 @@ def download_audio(
     cookies_file = cookies_file or config.get('default_cookies', 'youtube_cookies.txt')
     proxy = proxy or config.get('default_proxy')
     output_dir = output_dir or config.get('output_dir', '.')
+    whisper_model = whisper_model or config.get('whisper_model', 'small')
+    whisper_language = whisper_language or config.get('whisper_language', 'ru')
     
     ensure_output_dir(output_dir)
-    clean_output_dir(output_dir)  # Очищаем перед новым скачиванием
+    if clean:
+        clean_output_dir(output_dir, logger=logger)
     logger.info(f"Директория вывода: {output_dir}")
     
     ydl_opts = {
@@ -432,8 +454,13 @@ def download_audio(
                 
                 # Транскрибация
                 if transcribe:
-                    logger.info("Транскрибируем...")
-                    text = transcribe_audio(output_file, logger=logger)
+                    logger.info(f"Транскрибируем (модель {whisper_model}, язык {whisper_language})...")
+                    text = transcribe_audio(
+                        output_file,
+                        model=whisper_model,
+                        language=whisper_language,
+                        logger=logger
+                    )
                     if text:
                         txt_file = base_name + '.txt'
                         with open(txt_file, 'w', encoding='utf-8') as f:
@@ -474,6 +501,12 @@ if __name__ == "__main__":
     parser.add_argument("--batch", help="JSON-файл с массивом задач для массового скачивания")
     parser.add_argument("--audio", action="store_true", help="Скачивать только аудиодорожку")
     parser.add_argument("--transcribe", action="store_true", help="Транскрибировать аудио через Whisper")
+    parser.add_argument("--whisper-model", default=None,
+                        help="Модель Whisper: tiny/base/small/medium/large-v3 (по умолчанию из config.json или small)")
+    parser.add_argument("--whisper-language", default=None,
+                        help="Язык распознавания (по умолчанию из config.json или ru)")
+    parser.add_argument("--clean", action="store_true",
+                        help="Очистить каталог вывода перед скачиванием (раньше делалось всегда)")
     
     args = parser.parse_args()
     
@@ -482,13 +515,23 @@ if __name__ == "__main__":
         tasks = load_batch_config(args.batch)
         results = []
         for task in tasks:
-            task_config = {k: v for k, v in task.items() if k not in ('url', 'audio')}
+            # transcribe/convert/whisper_* вынимаем из task, чтобы не дублировать
+            # именованные аргументы (раньше это давало TypeError)
+            task_config = {
+                k: v for k, v in task.items()
+                if k not in ('url', 'audio', 'transcribe', 'convert')
+            }
+            task_transcribe = bool(task.get('transcribe', args.transcribe))
+            task_convert = bool(task.get('convert', args.convert))
             if task.get('audio'):
                 result = download_audio(
                     url=task.get('url'),
                     logger=logger,
                     config=config,
-                    transcribe=args.transcribe,
+                    transcribe=task_transcribe,
+                    whisper_model=args.whisper_model,
+                    whisper_language=args.whisper_language,
+                    clean=args.clean,
                     **task_config
                 )
             else:
@@ -496,7 +539,8 @@ if __name__ == "__main__":
                     url=task.get('url'),
                     logger=logger,
                     config=config,
-                    convert=args.convert,
+                    convert=task_convert,
+                    clean=args.clean,
                     **task_config
                 )
             results.append(result)
@@ -517,7 +561,8 @@ if __name__ == "__main__":
             output_dir=args.output,
             process_playlist=args.playlist,
             config=config,
-            convert=args.convert
+            convert=args.convert,
+            clean=args.clean
         )
     else:
         if args.audio:
@@ -530,7 +575,10 @@ if __name__ == "__main__":
                 config=config,
                 logger=logger,
                 convert=True,
-                transcribe=args.transcribe
+                transcribe=args.transcribe,
+                whisper_model=args.whisper_model,
+                whisper_language=args.whisper_language,
+                clean=args.clean
             )
         else:
             result = download_video(
@@ -542,7 +590,8 @@ if __name__ == "__main__":
                 process_playlist=args.playlist,
                 config=config,
                 logger=logger,
-                convert=args.convert
+                convert=args.convert,
+                clean=args.clean
             )
     
     sys.exit(0 if result else 1)
