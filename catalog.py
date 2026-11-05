@@ -29,7 +29,7 @@ from pathlib import Path
 MEDIA_EXT = {".mp3", ".m4a", ".opus", ".wav", ".webm", ".mp4", ".mkv", ".flac"}
 TXT_EXT = {".txt", ".srt", ".vtt"}
 
-RE_URL = re.compile(r"Скачиваем:\s*(\S+)")
+RE_URL = re.compile(r"Скачиваем(?:\s+аудио)?:\s*(\S+)")
 RE_EVENT = re.compile(r"(Готово|Конвертировано|Транскрипция):\s*(.+?)\s*$")
 RE_BARE_DONE = re.compile(r"Готово!\s*$")
 RE_SIZE = re.compile(r"\s+\([\d.,]+\s*[KMG]B\)\s*$")
